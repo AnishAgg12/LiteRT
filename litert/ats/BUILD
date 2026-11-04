@@ -201,6 +201,8 @@ BUILTIN_MODELS_DONT_REGISTER = [
 ]
 
 YNNPACK_FALLBACK_MODELS_DONT_REGISTER = [
+    "torchvision_video_resnet3d_18",  # TODO(b/576864700): Reference Conv3D fallback (~10m) causes target timeout.
+    "torchvision_video_resnetmc3_18",  # TODO(b/576864700): Reference Conv3D fallback (~12m) causes target timeout.
 ]
 
 GPU_MODELS_DONT_REGISTER = [
