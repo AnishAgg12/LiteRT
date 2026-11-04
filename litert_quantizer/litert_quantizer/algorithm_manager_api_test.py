@@ -276,6 +276,53 @@ class AlgorithmManagerApiTest(parameterized.TestCase):
     )
     self.assertEqual(update_qsv_func, _sample_update_qsv_func)
 
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="npu_call_is_quantizable",
+          composite_name="od" + "ml.npu_call",
+          expected=False,
+      ),
+      dict(
+          testcase_name="rms_norm_is_quantizable",
+          composite_name="od" + "ml.rms_norm",
+          expected=False,
+      ),
+      dict(
+          testcase_name="l2_norm_is_quantizable",
+          composite_name="od" + "ml.l2_norm",
+          expected=False,
+      ),
+      dict(
+          testcase_name="group_norm_is_quantizable",
+          composite_name="od" + "ml.group_norm",
+          expected=False,
+      ),
+      dict(
+          testcase_name="sdpa_is_non_quantizable",
+          composite_name="od" + "ml.scaled_dot_product_attention",
+          expected=True,
+      ),
+  )
+  def test_is_non_quantizable_composite_op(
+      self, composite_name: str, expected: bool
+  ):
+    op = qtyping.OperatorT()
+    opts = qtyping.StableHLOCompositeOptionsT()
+    opts.name = composite_name.encode("utf-8")
+    op.builtinOptions2Type = (
+        qtyping.BuiltinOptions2.StableHLOCompositeOptions
+    )
+    op.builtinOptions2 = opts
+    self.assertEqual(
+        default_policy.is_non_quantizable_composite_op(op), expected
+    )
+
+  def test_is_non_quantizable_composite_op_returns_false_for_non_composite(
+      self,
+  ):
+    op = qtyping.OperatorT()
+    self.assertFalse(default_policy.is_non_quantizable_composite_op(op))
+
 
 if __name__ == "__main__":
   absltest.main()
