@@ -240,10 +240,21 @@ TEST_F(WeightCacheBuilderTest, CorruptBufferListFailsGracefully) {
 
 TEST_F(WeightCacheBuilderTest, EmptyBuildStepEndsTheStep) {
   const std::string cache_path = testing::TempDir() + "/cache";
+  const std::string payload1 = "First step payload.";
+  const std::string payload2 = "Third step payload.";
+  const PackIdentifier id1{1, 2, 3};
+  const PackIdentifier id2{4, 5, 6};
   FileDescriptor file_descriptor = FileDescriptor::Open(
       cache_path.c_str(), O_CREAT | O_TRUNC | O_RDWR, 0644);
   WeightCacheBuilder builder;
   ASSERT_TRUE(builder.Start(cache_path.c_str(), file_descriptor));
+
+  ASSERT_TRUE(builder.StartBuildStep());
+  ASSERT_FALSE(
+      builder
+          .Append(id1, payload1.data(), payload1.size(), kDefaultFingerprint.id)
+          .IsInvalid());
+  ASSERT_TRUE(builder.StopBuildStep());
 
   ASSERT_TRUE(builder.StartBuildStep());
   // Reserve without Append: the step is empty and takes the early return.
@@ -252,6 +263,26 @@ TEST_F(WeightCacheBuilderTest, EmptyBuildStepEndsTheStep) {
   EXPECT_FALSE(builder.IsBuilding());
   EXPECT_EQ(builder.capacity(), 0);
   EXPECT_EQ(builder.data(), nullptr);
+  EXPECT_EQ(builder.LastBuildStepSize(), 0);
+
+  // Starting another step after an empty step reuses the already-loaded
+  // buffer list and preserves prior buffers.
+  ASSERT_TRUE(builder.StartBuildStep());
+  ASSERT_FALSE(
+      builder
+          .Append(id2, payload2.data(), payload2.size(), kDefaultFingerprint.id)
+          .IsInvalid());
+  ASSERT_TRUE(builder.StopBuildStep());
+
+  MMapHandle handle;
+  ASSERT_TRUE(handle.Map(cache_path.c_str()));
+  const auto& header =
+      *reinterpret_cast<const XNNPackCacheHeader*>(handle.data());
+  const cache::schema::BufferList* const packed_weights =
+      cache::schema::GetBufferList(handle.data() + header.buffer_list_offset);
+  ASSERT_NE(packed_weights, nullptr);
+  ASSERT_NE(packed_weights->buffers(), nullptr);
+  EXPECT_EQ(packed_weights->buffers()->size(), 2);
 }
 
 TEST_F(WeightCacheBuilderTest, FailedAppendDoesNotCorruptSchema) {

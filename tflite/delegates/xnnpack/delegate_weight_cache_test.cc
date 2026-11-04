@@ -141,5 +141,74 @@ TEST_F(XnnpackDelegateWeightCacheTest,
   EXPECT_FALSE(shared_weight_cache_provider.IsActive());
 }
 
+TEST_F(XnnpackDelegateWeightCacheTest,
+       ReuseCacheAcrossMultiplePartitionsInSubgraph) {
+  TfLiteXNNPackDelegateOptions xnnpack_options = GetXNNPackOptions();
+  xnnpack::MMapWeightCacheProvider shared_weight_cache_provider;
+  xnnpack_options.weight_cache_provider = &shared_weight_cache_provider;
+  xnnpack_options.weight_cache_file_path =
+      TfLiteXNNPackDelegateInMemoryFilePath();
+
+  std::vector<float> first_run_output;
+  for (int run = 0; run < 2; ++run) {
+    model_builder::ModelBuilder builder;
+    auto weights1 = NewConstantBuffer(builder);
+    Assign<kTfLiteInt8>(weights1, {3, 4},
+                        std::vector<int>{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12},
+                        model_builder::AffineQuantization{/*zero_points=*/{0},
+                                                          /*scales=*/{1.45},
+                                                          /*axis=*/1});
+    auto weights2 = NewConstantBuffer(builder);
+    Assign<kTfLiteInt8>(weights2, {2, 3}, std::vector<int>{2, -1, 3, 1, 4, -2},
+                        model_builder::AffineQuantization{/*zero_points=*/{0},
+                                                          /*scales=*/{0.5},
+                                                          /*axis=*/1});
+
+    auto main_graph = NewGraph(builder);
+    auto fallback_graph = NewGraph(builder);
+    auto fallback_in = NewInput(fallback_graph, kTfLiteFloat32);
+    SetShape(fallback_in, {2, 3});
+    MarkOutput(Add(fallback_in, fallback_in));
+
+    auto input = NewInput(main_graph, kTfLiteFloat32);
+    SetShape(input, {2, 4});
+    auto fc1 = FullyConnected(input, weights1);
+    // An unsupported composite op splits `main_graph` into two XNNPACK
+    // partitions while `fallback_graph` exercises a weightless subgraph step.
+    auto mid = StableHLOComposite("custom_fallback", fallback_graph, {fc1});
+    SetShape(mid[0], {2, 3});
+    MarkOutput(FullyConnected(mid[0], weights2));
+
+    tflite::Interpreter interpreter;
+    builder.Build(interpreter);
+
+    std::unique_ptr<TfLiteDelegate, void (*)(TfLiteDelegate*)> xnnpack_delegate(
+        TfLiteXNNPackDelegateCreate(&xnnpack_options),
+        TfLiteXNNPackDelegateDelete);
+
+    ASSERT_EQ(interpreter.ModifyGraphWithDelegate(std::move(xnnpack_delegate)),
+              kTfLiteOk);
+    EXPECT_EQ(interpreter.execution_plan().size(), 3);
+    EXPECT_TRUE(shared_weight_cache_provider.IsActive());
+    EXPECT_FALSE(shared_weight_cache_provider.IsBuilding());
+
+    ASSERT_EQ(interpreter.AllocateTensors(), kTfLiteOk);
+    TfLiteTensor* input_tensor = interpreter.input_tensor(0);
+    for (int i = 0; i < 8; ++i) {
+      input_tensor->data.f[i] = static_cast<float>(i);
+    }
+    ASSERT_EQ(interpreter.Invoke(), kTfLiteOk);
+
+    const TfLiteTensor* output_tensor = interpreter.output_tensor(0);
+    std::vector<float> current_output(output_tensor->data.f,
+                                      output_tensor->data.f + 4);
+    if (run == 0) {
+      first_run_output = std::move(current_output);
+    } else {
+      EXPECT_EQ(current_output, first_run_output);
+    }
+  }
+}
+
 }  // namespace
 }  // namespace tflite
